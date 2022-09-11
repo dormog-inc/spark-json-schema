@@ -1,10 +1,15 @@
 package org.zalando.spark.jsonschema
 
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.jayway.jsonpath.{Configuration, JsonPath}
+import net.minidev.json.JSONArray
 import org.apache.spark.sql.types._
 import play.api.libs.json._
 
+import java.util
 import scala.annotation.tailrec
 import scala.io.Source
+
 
 /**
  * Schema Converter for getting schema in json format into a spark Structure
@@ -42,7 +47,8 @@ object SchemaConverter {
     "object" -> StructType,
     "array" -> ArrayType
   )
-  var definitions: JsObject = JsObject(Seq.empty)
+  var IdRefs = Map.empty : Map[String, JsObject]
+  var definitions: JsObject = JsObject.empty
   private var isStrictTypingEnabled: Boolean = true
 
   def disableStrictTyping(): SchemaConverter.type = {
@@ -72,6 +78,7 @@ object SchemaConverter {
           s"Root level of schema needs to have a [$SchemaStructContents]-field"
         )
       )
+      IdRefs = addIdsRefs(properties)
       convertJsonStruct(new StructType, properties, properties.keys.toList)
     } else {
       throw new IllegalArgumentException(
@@ -139,6 +146,29 @@ object SchemaConverter {
     }
   }
 
+  private def addIdsRefs(json: JsObject): Map[String, JsObject] = {
+    var res = Map.empty[String, JsObject]
+    val parse = Configuration.defaultConfiguration.jsonProvider.parse(json.toString())
+
+    val path = JsonPath.compile("$..[?(@.id && @.properties)]")
+    // read the paths
+    val asPaths = path.read[JSONArray](parse,
+      Configuration.builder.options(com.jayway.jsonpath.Option.AS_PATH_LIST).build)
+    val paths = asPaths.toArray(new Array[String](asPaths.size))
+
+    // put the paths and values together using the array indexes
+    for (i <- 0 until paths.length) {
+      JsonPath.compile(paths(i)).read(parse)
+      val value = JsonPath.compile(paths(i)).read[util.LinkedHashMap[String, Object]](parse)
+
+      val parentValuePLay = Json.parse(new ObjectMapper().writeValueAsString(value))
+      if (parentValuePLay.isInstanceOf[JsObject]) {
+        val id = (parentValuePLay \ "id").as[JsString].value
+        res = res + (id -> parentValuePLay.as[JsObject])
+      }
+    }
+    res
+  }
   def traversePath(loc: List[String], path: JsPath): JsPath = {
     loc match {
       case head :: tail => traversePath(tail, path \ head)
@@ -150,6 +180,9 @@ object SchemaConverter {
     val schemaRef = (inputJson \ Reference).asOpt[JsString]
     schemaRef match {
       case Some(loc) =>
+        if (IdRefs.contains(loc.value)) {
+          return IdRefs(loc.value).as[JsObject]
+        }
         val searchDefinitions = Definitions + "/"
         val defIndex = loc.value.indexOf(searchDefinitions) match {
           case -1 => throw new NoSuchElementException(

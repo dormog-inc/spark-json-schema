@@ -1,7 +1,11 @@
 plugins {
 	id 'scala'
     id 'java-library'
+    id "io.github.almogtavor.auto-composite-build" version "1.0.3"
 }
+
+version = "0.7.0"
+group = "org.zalando"
 
 
 def scalaVersion = "2.12"
@@ -29,7 +33,7 @@ dependencies {
             strictly '2.11.2'
         }
     }
-
+    implementation "com.jayway.jsonpath:json-path:2.7.0"
 }
 
 test {
